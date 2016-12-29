@@ -70,7 +70,7 @@ typedef struct {
     sph_whirlpool_context   whirlpool1;
 } Xhash_context_holder;
 
-static Xhash_context_holder base_contexts;
+extern Xhash_context_holder base_contexts;
 
 
 void init_Bhash_contexts()
