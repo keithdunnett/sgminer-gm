@@ -1,5 +1,7 @@
 #ifndef MINER_H
 #define MINER_H
+#define CL_USE_DEPRECATED_OPENCL_2_0_APIS
+#define CL_USE_DEPRECATED_OPENCL_2_1_APIS
 
 #include "config.h"
 

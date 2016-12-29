@@ -1,5 +1,6 @@
 #ifndef FINDNONCE_H
 #define FINDNONCE_H
+#define CL_USE_DEPRECATED_OPENCL_2_0_APIS
 
 #include "miner.h"
 #include "config.h"
