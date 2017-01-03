@@ -6,7 +6,6 @@
  * Software Foundation; either version 3 of the License, or (at your option)
  * any later version.  See COPYING for more details.
  */
-#define CL_USE_DEPRECATED_OPENCL_2_0_APIS
 
 #include "config.h"
 

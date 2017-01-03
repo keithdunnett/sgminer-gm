@@ -1,6 +1,5 @@
 #ifndef OCL_H
 #define OCL_H
-#define CL_USE_DEPRECATED_OPENCL_2_0_APIS
 
 #include "config.h"
 

@@ -285,31 +285,31 @@ static cl_int queue_yescrypt_multikernel(_clState *clState, dev_blk_ctx *blk, __
   CL_SET_ARG(le_target);
 
 //inactive kernel
-  num = 0;
+// num = 0;
   kernel = clState->extra_kernels;
   CL_SET_ARG_N(0,clState->buffer1);
   CL_SET_ARG_N(1,clState->buffer2);
 //  CL_SET_ARG_N(3, clState->buffer3);
 
 //mix2_2
-  num = 0;
+//  num = 0;
   CL_NEXTKERNEL_SET_ARG_N(0, clState->padbuffer8);
   CL_SET_ARG_N(1,clState->buffer1);
   CL_SET_ARG_N(2,clState->buffer2);
   //mix2_2
 //inactive kernel
-  num = 0;
+ // num = 0;
   CL_NEXTKERNEL_SET_ARG_N(0, clState->buffer1);
   CL_SET_ARG_N(1, clState->buffer2);
   //mix2_2
 
-  num = 0;
+ // num = 0;
   CL_NEXTKERNEL_SET_ARG_N(0, clState->padbuffer8);
   CL_SET_ARG_N(1, clState->buffer1);
   CL_SET_ARG_N(2, clState->buffer2);
 
   //inactive kernel
-  num = 0;
+  //num = 0;
   CL_NEXTKERNEL_SET_ARG_N(0, clState->buffer1);
   CL_SET_ARG_N(1, clState->buffer2);
   //mix2_2
@@ -891,17 +891,17 @@ static cl_int queue_lyra2rev2_kernel(struct __clState *clState, struct _dev_blk_
   kernel = clState->extra_kernels;
   CL_SET_ARG_0(clState->buffer1);
   // cubehash - search2
-  num = 0;
+  //num = 0;
   CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
   // lyra - search3
-  num = 0;
+  //num = 0;
   CL_NEXTKERNEL_SET_ARG_N(0, clState->buffer1);
   CL_SET_ARG_N(1, clState->padbuffer8);
   // skein -search4
-  num = 0;
+  //num = 0;
   CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
   // cubehash - search5
-  num = 0;
+  //num = 0;
   CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
   // bmw - search6
   num = 0;
@@ -1091,7 +1091,7 @@ static cl_int queue_cryptonight_kernel(_clState *clState, dev_blk_ctx *blk, __ma
 	cl_kernel *kernel = &clState->kernel;
 	unsigned int num = 0;
 	cl_int status = 0, tgt32 = (blk->work->XMRTarget);
-	cl_ulong le_target = ((cl_ulong)(blk->work->XMRTarget));
+	__maybe_unused cl_ulong le_target = ((cl_ulong)(blk->work->XMRTarget));
 
 	//le_target = *(cl_ulong *)(blk->work->device_target + 24);
 	memcpy(clState->cldata, blk->work->data, 76);
