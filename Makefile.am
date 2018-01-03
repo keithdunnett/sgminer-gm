@@ -87,4 +87,5 @@ sgminer_SOURCES += algorithm/equihash.c algorithm/equihash.h
 sgminer_SOURCES += gbt-util.c gbt-util.h
 
 bin_SCRIPTS	= $(top_srcdir)/kernel/*.cl
+bin_SCRIPTS	+= $(top_srcdir)/kernel/*.h
 
