@@ -184,7 +184,7 @@ void AESExpandKey256(uint32_t *keybuf)
 	}
 }
 
-void cryptonight(uint32_t *Output, uint32_t *Input)
+void cryptonight(uint32_t *Output, uint32_t *Input, uint32_t Length)
 {
 	CryptonightCtx CNCtx;
 	uint64_t text[16], a[2], b[2];
