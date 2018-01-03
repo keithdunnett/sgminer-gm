@@ -123,6 +123,9 @@ static void append_scrypt_compiler_options(struct _build_kernel_data *data, stru
 
 static void append_ethash_compiler_options(struct _build_kernel_data *data, struct cgpu_info *cgpu, struct _algorithm_t *algorithm)
 {
+#ifdef WIN32
+  strcat(data->compiler_options, "-DWINDOWS");
+#endif
 }
 
 static void append_neoscrypt_compiler_options(struct _build_kernel_data *data, struct cgpu_info *cgpu, struct _algorithm_t *algorithm)
@@ -1094,11 +1097,12 @@ static cl_int queue_cryptonight_kernel(_clState *clState, dev_blk_ctx *blk, __ma
 	cl_ulong le_target = ((cl_ulong)(blk->work->XMRTarget));
 
 	//le_target = *(cl_ulong *)(blk->work->device_target + 24);
-	memcpy(clState->cldata, blk->work->data, 76);
-		
-	status = clEnqueueWriteBuffer(clState->commandQueue, clState->CLbuffer0, true, 0, 76, clState->cldata , 0, NULL, NULL);
+	memcpy(clState->cldata, blk->work->data, blk->work->XMRBlobLen);
+	
+	status = clEnqueueWriteBuffer(clState->commandQueue, clState->CLbuffer0, true, 0, blk->work->XMRBlobLen, clState->cldata , 0, NULL, NULL);
 	
 	CL_SET_ARG(clState->CLbuffer0);
+	CL_SET_ARG(blk->work->XMRBlobLen);
 	CL_SET_ARG(clState->Scratchpads);
 	CL_SET_ARG(clState->States);
 	
@@ -1147,6 +1151,7 @@ static cl_int queue_cryptonight_kernel(_clState *clState, dev_blk_ctx *blk, __ma
 }
 
 
+#define WORKSIZE clState->wsize
 
 static cl_int queue_equihash_kernel(_clState *clState, dev_blk_ctx *blk, __maybe_unused cl_uint threads)
 {
@@ -1160,43 +1165,43 @@ static cl_int queue_equihash_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
   uint32_t dbg[2] = {0};
   status |= clEnqueueWriteBuffer(clState->commandQueue, clState->padbuffer8, CL_TRUE, 0, sizeof(dbg), &dbg, 0, NULL, NULL);
   
-  cl_mem buf_ht[2] = {clState->CLbuffer0, clState->buffer1};
   cl_mem rowCounters[2] = {clState->buffer2, clState->buffer3};
   for (int round = 0; round < PARAM_K; round++) {
-    size_t global_ws = NR_ROWS / ROWS_PER_UINT;
+    size_t global_ws = RC_SIZE;
     size_t local_ws = 256;
     unsigned int num = 0;
     cl_kernel *kernel = &clState->extra_kernels[0];
     // Now on every round!!!!
-    CL_SET_ARG(buf_ht[round % 2]);
+    CL_SET_ARG(clState->index_buf[round]);
     CL_SET_ARG(rowCounters[round % 2]);
+    CL_SET_ARG(clState->outputBuffer);
+    CL_SET_ARG(clState->CLbuffer0);
     status |= clEnqueueNDRangeKernel(clState->commandQueue, *kernel, 1, NULL, &global_ws, &local_ws, 0, NULL, NULL);
     
-    num = 0;
     kernel = &clState->extra_kernels[1 + round];
     if (!round) {
-      CL_SET_ARG(clState->MidstateBuf);
-      CL_SET_ARG(buf_ht[round % 2]);
-      CL_SET_ARG(rowCounters[round % 2]);
-      work_items = threads;
+      worksize = LOCAL_WORK_SIZE_ROUND0;
+      work_items = NR_INPUTS / ROUND0_INPUTS_PER_WORK_ITEM;
     }
     else {
-      CL_SET_ARG(buf_ht[(round - 1) % 2]);
-      CL_SET_ARG(buf_ht[round % 2]);
-      CL_SET_ARG(rowCounters[(round - 1) % 2]);
-      CL_SET_ARG(rowCounters[round % 2]);
-      work_items = NR_ROWS;
+      worksize = LOCAL_WORK_SIZE;
+      work_items = NR_ROWS * worksize;
     }
-    CL_SET_ARG(clState->padbuffer8);
-    if (round == PARAM_K - 1)
-      CL_SET_ARG(clState->outputBuffer);
-    status |= clEnqueueNDRangeKernel(clState->commandQueue, *kernel, 1, NULL, &work_items, &worksize, 0, NULL, NULL);
+    status |= clEnqueueNDRangeKernel(clState->commandQueue, clState->extra_kernels[1 + round], 1, NULL, &work_items, &worksize, 0, NULL, NULL);
   }
-  work_items = NR_ROWS;
+
+  worksize = LOCAL_WORK_SIZE_POTENTIAL_SOLS;
+  work_items = NR_ROWS * worksize;
+  status |= clEnqueueNDRangeKernel(clState->commandQueue, clState->extra_kernels[1 + 9], 1, NULL, &work_items, &worksize, 0, NULL, NULL); 
+
+  worksize = LOCAL_WORK_SIZE_SOLS;
+  work_items = MAX_POTENTIAL_SOLS * worksize;
   status |= clEnqueueNDRangeKernel(clState->commandQueue, clState->kernel, 1, NULL, &work_items, &worksize, 0, NULL, NULL);
  
   return status;
 }
+#undef WORKSIZE
+
 
 static algorithm_settings_t algos[] = {
   // kernels starting from this will have difficulty calculated by using litecoin algorithm
@@ -1290,8 +1295,9 @@ static algorithm_settings_t algos[] = {
   { "blake256r14", ALGO_BLAKE,     "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x00000000UL, 0, 128, 0, blake256_regenhash, precalc_hash_blake256, queue_blake_kernel, gen_hash, NULL },
   { "vanilla",     ALGO_VANILLA,   "", 1, 1, 1, 0, 0, 0xFF, 0xFFFFULL, 0x000000ffUL, 0, 128, 0, blakecoin_regenhash, precalc_hash_blakecoin, queue_blake_kernel, gen_hash, NULL },
 
-  { "ethash",     ALGO_ETHASH,   "", (1ULL << 32), (1ULL << 32), 1, 0, 0, 0xFF, 0xFFFF000000000000ULL, 0x00000000UL, 0, 128, 0, ethash_regenhash, NULL, queue_ethash_kernel, gen_hash, append_ethash_compiler_options },
-  { "ethash-genoil",     ALGO_ETHASH,   "", (1ULL << 32), (1ULL << 32), 1, 0, 0, 0xFF, 0xFFFF000000000000ULL, 0x00000000UL, 0, 128, 0, ethash_regenhash, NULL, queue_ethash_kernel, gen_hash, append_ethash_compiler_options },
+  { "ethash",     ALGO_ETHASH,   "", 1, 1, 1, 0, 0, 0xFF, 0xFFFF000000000000ULL, 0x000000FFUL, 0, 128, 0, ethash_regenhash, NULL, queue_ethash_kernel, gen_hash, append_ethash_compiler_options },
+  { "ethash-genoil",     ALGO_ETHASH,   "", 1, 1, 1, 0, 0, 0xFF, 0xFFFF000000000000ULL, 0x000000FFUL, 0, 128, 0, ethash_regenhash, NULL, queue_ethash_kernel, gen_hash, append_ethash_compiler_options },
+  { "ethash-new",     ALGO_ETHASH,   "", 1, 1, 1, 0, 0, 0xFF, 0xFFFF000000000000ULL, 0x000000FFUL, 0, 128, 0, ethash_regenhash, NULL, queue_ethash_kernel, gen_hash, append_ethash_compiler_options },
 
   { "cryptonight", ALGO_CRYPTONIGHT, "", (1ULL << 32), (1ULL << 32), (1ULL << 32), 0, 0, 0xFF, 0xFFFFULL, 0x0000ffffUL, 6, 0, 0, cryptonight_regenhash, NULL, queue_cryptonight_kernel, gen_hash, NULL },
   

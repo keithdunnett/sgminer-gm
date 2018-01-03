@@ -421,14 +421,14 @@ char *set_gpu_powertune(char *arg)
   if (nextptr == NULL)
     return "Invalid parameters for set gpu powertune";
   val = atoi(nextptr);
-  if (val < -99 || val > 99)
+  if (val < -99 || val > 499)
     return "Invalid value passed to set_gpu_powertune";
 
   gpus[device++].gpu_powertune = val;
 
   while ((nextptr = strtok(NULL, ",")) != NULL) {
     val = atoi(nextptr);
-    if (val < -99 || val > 99)
+    if (val < -99 || val > 499)
       return "Invalid value passed to set_gpu_powertune";
 
     gpus[device++].gpu_powertune = val;
@@ -484,7 +484,7 @@ char *set_temp_overheat(char *arg)
     return "Invalid value passed to set temp overheat";
 
   gpus[device].adl.overtemp = val;
-  gpus[device++].sysfs_info.OverHeatTemp = val;
+  gpus[device++].sysfs_info.overheat_temp = val;
 
   while ((nextptr = strtok(NULL, ",")) != NULL) {
     val = atoi(nextptr);
@@ -492,12 +492,12 @@ char *set_temp_overheat(char *arg)
       return "Invalid value passed to set temp overheat";
 
     gpus[device].adl.overtemp = val;
-    gpus[device++].sysfs_info.OverHeatTemp = val;
+    gpus[device++].sysfs_info.overheat_temp = val;
   }
   if (device == 1) {
     for (i = device; i < MAX_GPUDEVICES; i++) {
       gpus[i].adl.overtemp = val;
-      gpus[i].sysfs_info.OverHeatTemp = val;
+      gpus[i].sysfs_info.overheat_temp = val;
     }
   }
 
@@ -518,7 +518,7 @@ char *set_temp_target(char *arg)
 
   tt = &gpus[device].adl.targettemp;
   *tt = val;
-  tt = &gpus[device++].sysfs_info.TargetTemp;
+  tt = &gpus[device++].sysfs_info.target_temp;
   *tt = val;
 
   while ((nextptr = strtok(NULL, ",")) != NULL) {
@@ -528,14 +528,14 @@ char *set_temp_target(char *arg)
 
     tt = &gpus[device].adl.targettemp;
     *tt = val;
-    tt = &gpus[device++].sysfs_info.TargetTemp;
+    tt = &gpus[device++].sysfs_info.target_temp;
     *tt = val;    
   }
   if (device == 1) {
     for (i = device; i < MAX_GPUDEVICES; i++) {
       tt = &gpus[i].adl.targettemp;
       *tt = val;
-      tt = &gpus[i].sysfs_info.TargetTemp;
+      tt = &gpus[i].sysfs_info.target_temp;
       *tt = val;
     }
   }
@@ -1646,6 +1646,16 @@ static void opencl_thread_shutdown(struct thr_info *thr)
       clReleaseMemObject(clState->buffer3);
     if (clState->padbuffer8)
       clReleaseMemObject(clState->padbuffer8);
+    for (i = 0; i < 9; i++)
+      if (clState->index_buf[i])
+        clReleaseMemObject(clState->index_buf[i]);
+    for (i = 0; i < 4; i++)
+      if (clState->BranchBuffer[i])
+        clReleaseMemObject(clState->BranchBuffer[i]);
+    if (clState->Scratchpads)
+      clReleaseMemObject(clState->Scratchpads);
+    if (clState->States)
+      clReleaseMemObject(clState->States);
     clReleaseKernel(clState->kernel);
     for (i = 0; i < clState->n_extra_kernels; i++)
       clReleaseKernel(clState->extra_kernels[i]);
@@ -1668,7 +1678,7 @@ struct device_drv opencl_drv = {
   /*.name = */      "GPU",
   /*.drv_detect = */    opencl_detect,
   /*.reinit_device = */   reinit_opencl_device,
-#ifdef HAVE_ADL
+#if (defined HAVE_ADL) || (defined __linux__)
   /*.get_statline_before = */ get_opencl_statline_before,
 #else
   NULL,
