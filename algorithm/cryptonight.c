@@ -190,7 +190,7 @@ void cryptonight(uint32_t *Output, uint32_t *Input, uint32_t Length)
 	uint64_t text[16], a[2], b[2];
 	uint32_t ExpandedKey1[64], ExpandedKey2[64];
 	
-	CNKeccak(CNCtx.State, ((uint64_t *)Input), ((uint32_t *)Length);
+	CNKeccak(CNCtx.State, ((uint64_t *)Input), Length);
 	
 	for(int i = 0; i < 4; ++i) ((uint64_t *)ExpandedKey1)[i] = CNCtx.State[i];
 	for(int i = 0; i < 4; ++i) ((uint64_t *)ExpandedKey2)[i] = CNCtx.State[i + 4];
