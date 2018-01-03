@@ -1359,6 +1359,31 @@ bool sock_full(struct pool *pool)
   return (socket_full(pool, 0));
 }
 
+bool sock_keepalived(struct pool *pool, const char *rpc2_id, int work_id)
+{
+  json_t *val = NULL, *res_val, *err_val;
+  char *s = NULL, *sret;
+  json_error_t err;
+  bool ret = false;
+
+  if (pool->algorithm.type == ALGO_CRYPTONIGHT) {
+    s = malloc(300 + strlen(rpc2_id) + 10);
+    snprintf(s, 128, "{\"method\": \"keepalived\", \"params\": {\"id\": \"%s\"}, \"id\":%d}", rpc2_id, work_id);
+  } else {
+    return true;
+  }
+
+  if (stratum_send(pool, s, strlen(s))) {
+    ret = true;
+  }
+
+  if (s) {
+    free(s);
+  }
+
+  return ret;
+}
+
 static void clear_sockbuf(struct pool *pool)
 {
   strcpy(pool->sockbuf, "");
@@ -1947,7 +1972,7 @@ bool parse_notify_cn(struct pool *pool, json_t *val)
   char *job_id = NULL;
   bool clean;
   uint32_t XMRTarget;
-  uint8_t XMRBlob[76];
+  uint8_t XMRBlob[128];
   int ret = true;
 
   /*json_t *arr = json_array_get(val, 0);
@@ -1973,7 +1998,15 @@ bool parse_notify_cn(struct pool *pool, json_t *val)
   }
 
   const char *blobval = json_string_value(blob);
-  if (!hex2bin(XMRBlob, blobval, 76)) {
+  
+  if(strlen(blobval) > 254)
+  {
+	  applog(LOG_ERR, "Got a massive blob from pool.");
+	  ret = false;
+	  goto out;
+  }
+	  
+  if (!hex2bin(XMRBlob, blobval, strlen(blobval) / 2)) {
     ret = false;
     goto out;
   }
@@ -1990,7 +2023,8 @@ bool parse_notify_cn(struct pool *pool, json_t *val)
   pool->swork.job_id = strdup(job_id);
   pool->swork.clean = true;
   
-  memcpy(pool->XMRBlob, XMRBlob, 76);
+  pool->XMRBlobLen = strlen(blobval) >> 1;
+  memcpy(pool->XMRBlob, XMRBlob, pool->XMRBlobLen);
   pool->XMRTarget = XMRTarget;
   pool->swork.diff = (double)0xffffffff / XMRTarget;
   pool->getwork_requested++;

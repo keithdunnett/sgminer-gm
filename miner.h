@@ -530,14 +530,29 @@ struct sgminer_pool_stats {
 };
 
 typedef struct _gpu_sysfs_info {
-  char *HWMonPath;
-  uint32_t MinFanSpeed;
-  uint32_t MaxFanSpeed;
-  uint32_t OverHeatTemp;
-  uint32_t TargetTemp;
-  float TgtFanSpeed;
-  float LastFanSpeed;
-  float LastTemp;
+  pthread_mutex_t rw_lock;
+  uint8_t *pptable;
+  uint8_t *default_pptable;
+  size_t pptable_size;
+  uint32_t min_fanspeed;
+  uint32_t max_fanspeed;
+  uint32_t overheat_temp;
+  uint32_t target_temp;
+  uint32_t ctr;
+  uint32_t last_ctr;
+  float target_fanpercent;
+  float last_temp;
+  int sclk_entry_size;
+  int sclk_ind;
+  int engineclock;
+  int memclock;
+  int fd_temp;
+  int fd_fan;
+  int fd_pptable;
+  int fd_mclk;
+  int fd_sclk;
+  int fd_pwm;
+  uint8_t pcie_index[3];
 } gpu_sysfs_info;
 
 struct _eth_dag_t;
@@ -1353,7 +1368,8 @@ struct pool {
   //XMR stuff
   char XMRAuthID[64];
   uint32_t XMRTarget;
-  uint8_t XMRBlob[76];
+  uint32_t XMRBlobLen;
+  uint8_t XMRBlob[128];
   pthread_mutex_t XMRGlobalNonceLock;
   uint32_t XMRGlobalNonce;
   
@@ -1366,6 +1382,7 @@ struct pool {
   bool lagging;
   bool probed;
   enum pool_state state;
+  bool keepalive;
   bool submit_old;
   bool remove_at_start;
   bool removed;
@@ -1514,7 +1531,8 @@ struct work {
   
   /* cryptonight stuff */
   uint32_t XMRTarget;
-  uint8_t XMRBlob[76];
+  uint32_t XMRBlobLen;
+  uint8_t XMRBlob[128];
     
   uint32_t XMRNonce;
   

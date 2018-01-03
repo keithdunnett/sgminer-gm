@@ -55,6 +55,7 @@ char *curly = ":D";
 #include "miner.h"
 #include "findnonce.h"
 #include "adl.h"
+#include "sysfs-gpu-controls.h"
 #include "driver-opencl.h"
 #include "bench_block.h"
 
@@ -1090,6 +1091,22 @@ static char *set_pool_state(char *arg)
   return NULL;
 }
 
+static char *set_pool_keepalive(char *arg)
+{
+  struct pool *pool = get_current_pool();
+
+  applog(LOG_INFO, "Setting pool %s keepalive to %s", get_pool_name(pool), arg);
+  if (strcmp(arg, "enabled") == 0) {
+    pool->keepalive = true;
+  } else if (strcmp(arg, "true") == 0) {
+    pool->keepalive = true;
+  } else {
+    pool->keepalive = false;
+  }
+
+  return NULL;
+}
+
 static char *set_switcher_mode(char *arg)
 {
   if(!strcasecmp(arg, "off"))
@@ -1793,6 +1810,9 @@ struct opt_table opt_config_table[] = {
   OPT_WITH_ARG("--state|--pool-state",
       set_pool_state, NULL, NULL,
       "Specify pool state at startup (default: enabled)"),
+  OPT_WITH_ARG("--keepalive|--pool-keepalive",
+      set_pool_keepalive, NULL, NULL,
+      "Specify pool if keepalived method is used (default: false)"),
   OPT_WITH_ARG("--switcher-mode",
       set_switcher_mode, NULL, NULL,
       "Algorithm/gpu settings switcher mode."),
@@ -5492,6 +5512,11 @@ static void hashmeter(int thr_id, struct timeval *diff,
   showlog = true;
   cgtime(&total_tv_end);
 
+  struct timeval runtime;
+  timersub(&total_tv_end, &launch_time, &runtime);
+  double runtime_secs = runtime.tv_sec + 1e-6 * runtime.tv_usec;
+  applog(LOG_DEBUG, "total hashes: %.0f, total runtime / s: %.3f", 1e6 * total_mhashes_done, runtime_secs);
+
   local_secs = (double)total_diff.tv_sec + ((double)total_diff.tv_usec / 1000000.0);
   decay_time(&total_rolling, local_mhashes_done / local_secs, local_secs);
   global_hashrate = ((unsigned long long)lround(total_rolling)) * 1000000;
@@ -5577,6 +5602,18 @@ static bool parse_stratum_response(struct pool *pool, char *s)
     goto out;
   }
 
+  json_t *status = json_object_get(res_val, "status");
+
+  if (status && pool->algorithm.type == ALGO_CRYPTONIGHT) {
+    const char *s = json_string_value(status);
+
+    if (s && !strcmp(s, "KEEPALIVED")) {
+      applog(LOG_NOTICE, "Keepalived from %s received", get_pool_name(pool));
+      ret = true;
+      goto out;
+    }
+  }
+
   id = json_integer_value(id_val);
 
   mutex_lock(&sshare_lock);
@@ -5600,22 +5637,25 @@ static bool parse_stratum_response(struct pool *pool, char *s)
     //for cryptonight, the result contains the "status" object which should = "OK" on accept
     if (pool->algorithm.type == ALGO_CRYPTONIGHT) {
       json_t *res_id, *res_job;
-      
+
       //check if the result contains an id... if so then we need to process as first job, not share response
       if ((res_id = json_object_get(res_val, "id"))) {
         cg_wlock(&pool->data_lock);
         strcpy(pool->XMRAuthID, json_string_value(res_id));
         cg_wunlock(&pool->data_lock);
-        
+
         //get the job object and send to parse notify
         if ((res_job = json_object_get(res_val, "job"))) {
           ret = parse_notify_cn(pool, res_job);
         }
-        
+
         goto out;
       }
-      
-      if (json_is_null(err_val) && !strcmp(json_string_value(json_object_get(res_val, "status")), "OK")) {
+
+      json_t *status = json_object_get(res_val, "status");
+      const char *s = json_string_value(status);
+
+      if (json_is_null(err_val) && status && !strcmp(s, "OK")) {
         success = true;
       }
       else {
@@ -5815,6 +5855,7 @@ static void *stratum_rthread(void *userdata)
 
   while (42) {
     struct timeval timeout;
+    struct timeval timeout_keep_alive;
     int sel_ret;
     fd_set rd;
     char *s;
@@ -5848,6 +5889,21 @@ static void *stratum_rthread(void *userdata)
     FD_SET(pool->sock, &rd);
     timeout.tv_sec = 90;
     timeout.tv_usec = 0;
+    
+
+    if (pool->algorithm.type == ALGO_CRYPTONIGHT && pool->keepalive) {
+      timeout_keep_alive.tv_sec = 60;
+      timeout_keep_alive.tv_usec = 0;
+
+      if (!sock_full(pool) && (sel_ret = select(pool->sock + 1, &rd, NULL, NULL, &timeout_keep_alive)) < 1) {
+        if (sock_keepalived(pool, pool->XMRAuthID, swork_id++)) {
+          applog(LOG_NOTICE, "Stratum %s keepalived sent, id: %d", get_pool_name(pool), swork_id - 1);
+        }
+
+        FD_ZERO(&rd);
+        FD_SET(pool->sock, &rd);
+      }
+    }
 
     /* The protocol specifies that notify messages should be sent
      * every minute so if we fail to receive any for 90 seconds we
@@ -5858,6 +5914,7 @@ static void *stratum_rthread(void *userdata)
       s = NULL;
     } else
       s = recv_line(pool);
+
     if (!s) {
       applog(LOG_NOTICE, "Stratum connection to %s interrupted", get_pool_name(pool));
       pool->getfail_occasions++;
@@ -6616,8 +6673,9 @@ static void gen_stratum_work_cn(struct pool *pool, struct work *work)
   work->XMRTarget = pool->XMRTarget;
   //strcpy(work->XMRID, pool->XMRID);
   //work->XMRBlockBlob = strdup(pool->XMRBlockBlob);
-  memcpy(work->XMRBlob, pool->XMRBlob, 76);
-  memcpy(work->data, work->XMRBlob, 76);
+  memcpy(work->XMRBlob, pool->XMRBlob, pool->XMRBlobLen);
+  work->XMRBlobLen = pool->XMRBlobLen;
+  memcpy(work->data, work->XMRBlob, work->XMRBlobLen);
   memset(work->target, 0xFF, 32);
   work->sdiff = (double)0xffffffff / pool->XMRTarget;
   work->work_difficulty = work->sdiff;
@@ -6674,13 +6732,12 @@ static void gen_stratum_work_equihash(struct pool *pool, struct work *work)
   cg_runlock(&pool->data_lock);
 
   if (opt_debug) {
-    char *header, *merkle_hash;
+    char *header;
 
     header = bin2hex(work->equihash_data, 143);
     applog(LOG_DEBUG, "[THR%d] Generated stratum header %s", work->thr_id, header);
     applog(LOG_DEBUG, "[THR%d] job_id %s, nonce1 %s, nonce2 %"PRIu64", ntime %s", work->thr_id, work->job_id, work->nonce1, work->nonce2, work->ntime);
     free(header);
-    free(merkle_hash);
   }
 
   /* equihash validates on the network target not share target... */
@@ -7296,141 +7353,6 @@ static void get_work_prepare_thread(struct thr_info *mythr, struct work *work)
     //apply switcher options
     apply_switcher_options(pool_switch_options, work->pool);
 
-    //devices
-    /*if(opt_isset(pool_switch_options, SWITCHER_APPLY_DEVICE))
-    {
-      //reset devices flags
-      opt_devs_enabled = 0;
-      for (i = 0; i < MAX_DEVICES; i++)
-          devices_enabled[i] = false;
-
-      //assign pool devices if any
-      if(!empty_string((opt = get_pool_setting(work->pool->devices, ((!empty_string(default_profile.devices))?default_profile.devices:"all"))))) {
-        set_devices((char *)opt);
-      }
-    }
-
-    //lookup gap
-    if(opt_isset(pool_switch_options, SWITCHER_APPLY_LG))
-    {
-      if(!empty_string((opt = get_pool_setting(work->pool->lookup_gap, default_profile.lookup_gap))))
-        set_lookup_gap((char *)opt);
-    }
-
-    //raw intensity from pool
-    if(opt_isset(pool_switch_options, SWITCHER_APPLY_RAWINT))
-    {
-      applog(LOG_DEBUG, "Switching to rawintensity: pool = %s, default = %s", work->pool->rawintensity, default_profile.rawintensity);
-      opt = get_pool_setting(work->pool->rawintensity, default_profile.rawintensity);
-      applog(LOG_DEBUG, "rawintensity -> %s", opt);
-      set_rawintensity(opt);
-    }
-    //xintensity
-    else if(opt_isset(pool_switch_options, SWITCHER_APPLY_XINT))
-    {
-      applog(LOG_DEBUG, "Switching to xintensity: pool = %s, default = %s", work->pool->xintensity, default_profile.xintensity);
-      opt = get_pool_setting(work->pool->xintensity, default_profile.xintensity);
-      applog(LOG_DEBUG, "xintensity -> %s", opt);
-      set_xintensity(opt);
-    }
-    //intensity
-    else if(opt_isset(pool_switch_options, SWITCHER_APPLY_INT))
-    {
-      applog(LOG_DEBUG, "Switching to intensity: pool = %s, default = %s", work->pool->intensity, default_profile.intensity);
-      opt = get_pool_setting(work->pool->intensity, default_profile.intensity);
-      applog(LOG_DEBUG, "intensity -> %s", opt);
-      set_intensity(opt);
-    }
-    //default basic intensity
-    else if(opt_isset(pool_switch_options, SWITCHER_APPLY_INT8))
-    {
-      default_profile.intensity = strdup("8");
-      set_intensity(default_profile.intensity);
-    }
-
-    //shaders
-    if(opt_isset(pool_switch_options, SWITCHER_APPLY_SHADER))
-    {
-      if(!empty_string((opt = get_pool_setting(work->pool->shaders, default_profile.shaders))))
-        set_shaders((char *)opt);
-    }
-
-    //thread-concurrency
-    if(opt_isset(pool_switch_options, SWITCHER_APPLY_TC))
-    {
-      // neoscrypt - if not specified set TC to 0 so that TC will be calculated by intensity settings
-      if (work->pool->algorithm.type == ALGO_NEOSCRYPT) {
-        opt = ((empty_string(work->pool->thread_concurrency))?"0":get_pool_setting(work->pool->thread_concurrency, default_profile.thread_concurrency));
-      }
-      // otherwise use pool/profile setting or default to default profile setting
-      else {
-        opt = get_pool_setting(work->pool->thread_concurrency, default_profile.thread_concurrency);
-      }
-
-      if(!empty_string(opt)) {
-        set_thread_concurrency((char *)opt);
-      }
-    }
-
-    //worksize
-    if(opt_isset(pool_switch_options, SWITCHER_APPLY_WORKSIZE))
-    {
-      if(!empty_string((opt = get_pool_setting(work->pool->worksize, default_profile.worksize))))
-        set_worksize(opt);
-    }
-
-    #ifdef HAVE_ADL
-      //GPU clock
-      if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_ENGINE))
-      {
-        if(!empty_string((opt = get_pool_setting(work->pool->gpu_engine, default_profile.gpu_engine))))
-          set_gpu_engine((char *)opt);
-      }
-
-      //GPU memory clock
-      if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_MEMCLOCK))
-      {
-        if(!empty_string((opt = get_pool_setting(work->pool->gpu_memclock, default_profile.gpu_memclock))))
-          set_gpu_memclock((char *)opt);
-      }
-
-      //GPU fans
-      if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_FAN))
-      {
-        if(!empty_string((opt = get_pool_setting(work->pool->gpu_fan, default_profile.gpu_fan))))
-          set_gpu_fan((char *)opt);
-      }
-
-      //GPU powertune
-      if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_POWERTUNE))
-      {
-        if(!empty_string((opt = get_pool_setting(work->pool->gpu_powertune, default_profile.gpu_powertune))))
-          set_gpu_powertune((char *)opt);
-      }
-
-      //GPU vddc
-      if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_VDDC))
-      {
-        if(!empty_string((opt = get_pool_setting(work->pool->gpu_vddc, default_profile.gpu_vddc))))
-          set_gpu_vddc((char *)opt);
-      }
-
-      //apply gpu settings
-      for (i = 0; i < nDevs; i++)
-      {
-        if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_ENGINE))
-          set_engineclock(i, gpus[i].min_engine);
-        if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_MEMCLOCK))
-          set_memoryclock(i, gpus[i].gpu_memclock);
-        if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_FAN))
-          set_fanspeed(i, gpus[i].min_fan);
-        if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_POWERTUNE))
-          set_powertune(i, gpus[i].gpu_powertune);
-        if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_VDDC))
-          set_vddc(i, gpus[i].gpu_vddc);
-      }
-    #endif
-  */
     // Change algorithm for each thread (thread_prepare calls initCl)
     if(opt_isset(pool_switch_options, SWITCHER_SOFT_RESET))
       applog(LOG_DEBUG, "Soft Reset... Restarting threads...");
@@ -7665,7 +7587,7 @@ bool test_nonce(struct work *work, uint32_t nonce)
     uint64_t target = *(uint64_t*) (work->device_target + 24);
     return (bswap_64(*(uint64_t*) work->hash) <= target);
   }
-  else if (work->pool->algorithm.type = ALGO_CRYPTONIGHT) {
+  else if (work->pool->algorithm.type == ALGO_CRYPTONIGHT) {
     return (((uint32_t *)work->hash)[7] <= work->XMRTarget);
   }
   else {
@@ -8464,9 +8386,8 @@ static void *watchdog_thread(void __maybe_unused *userdata)
       denable = &cgpu->deven;
       snprintf(dev_str, sizeof(dev_str), "%s%d", cgpu->drv->name, gpu);
 
-      if (adl_active && cgpu->has_adl || cgpu->has_sysfs_hwcontrols)
-        gpu_autotune(gpu, denable);
-      if (opt_debug && cgpu->has_adl) {
+      gpu_autotune(gpu, denable);
+      if (opt_debug) {
         int engineclock = 0, memclock = 0, activity = 0, fanspeed = 0, fanpercent = 0, powertune = 0;
         float temp = 0, vddc = 0;
 
@@ -8493,13 +8414,10 @@ static void *watchdog_thread(void __maybe_unused *userdata)
         dev_error(cgpu, REASON_DEV_SICK_IDLE_60);
         event_notify("gpu_sick");
 
-#ifdef HAVE_ADL
-        if (adl_active && cgpu->has_adl && gpu_activity(gpu) > 50) {
+        if (gpu_activity(gpu) > 50) {
           applog(LOG_ERR, "GPU still showing activity suggesting a hard hang.");
           applog(LOG_ERR, "Will not attempt to auto-restart it.");
-        } else
-#endif
-        if (opt_restart) {
+        } else if (opt_restart) {
           applog(LOG_ERR, "%s: Attempting to restart", dev_str);
           reinit_device(cgpu);
         }
@@ -8633,6 +8551,7 @@ static void clean_up(bool restarting)
 #ifdef HAVE_ADL
   clear_adl(nDevs);
 #endif
+  sysfs_cleanup(nDevs);
   cgtime(&total_tv_end);
 #ifdef WIN32
   timeEndPeriod(1);
